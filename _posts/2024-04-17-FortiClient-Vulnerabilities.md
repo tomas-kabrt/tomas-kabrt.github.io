@@ -25,7 +25,7 @@ The installation package is a DMG file containing supporting data and an MPKG fi
 
 The PKG contains preinstall and postinstall scripts. As the software requires the installation of many files for proper functionality, the script is relatively complex with function calls to copy the files to the expected locations, remove old services, get the correct system preferences, initiate the settings, set VPN connections, and much more.
 
-I like to start the analysis there as they are executed in the security context of the installer before and after the installation. The common features to check are if the script interacts with files in the folder we have access to (for example `/tmp/`), if there are any high-privilege calls that could be misused, or if a variable could be directly or indirectly controlled. Our goal is to influence the flow during the installation and create, alter, or just remove files from the system or get a privilege call.
+I like to start the package analysis there as the scripts are executed in the security context of the installer. The common features of the script to check are  interactions with files in the folder we have access to (for example `/tmp/`), high-privilege calls that could be misused, or variable that could be directly or indirectly controlled. Our goal is to influence the flow during the installation and create, alter, or just remove files from the system or get a privilege call.
 
 ![03]({{ site.baseurl }}/images/FortiClient/03.png)
 
@@ -41,11 +41,13 @@ touch /tmp/init.conf
 rm /tmp/init.conf
 ```
 
-The developers were so nice, that they give us a comment, what the intent of the code it. Basically this should do the initial setup of the plists. The plists are used as a configuration files, so it is possible we might be able to influence the settings of the software.
+The developers were so nice, that they give us a comment, what the intent of the code it. Basically the code should do the initial setup of the plists. The plists are used as a configuration files for the software, so there might be possibility to influence the settings of the software.
+
+What are plists anyways? Property List (plist) files on macOS are XML or binary files used to store configuration information for applications, preferences, and other system-level settings. They are commonly used by macOS and its applications to store user and system settings in a structured format.
 
 The codes starts with creation of a file `init.conf` in the `/tmp/` folder using the `touch` command. Touch command just make sure the file exists, so we do not need to do a race condition here and it is enough just to plant file in advanced and it will be used in later stages of the code. Afterwards it applies the XML config file by running `fcconfig` with parameter merge, which gives us also idea it might probably merge provided settings with the existing one. I wasn't able to find reliable documentation for the tool, but given the other clues, we can make an educated guess of its functionality.
 
-Now, we believe we can influence the configuration of FortiClient during installation, but what can we achieve with such config? Luckily, Fortinet provides documentation for XML configuration files, which is the type that is used here by `fcconfig` tool to create the plists. The [FortiClient XML Reference Guide](https://docs.fortinet.com/document/forticlient/7.0.7/xml-reference-guide/812076) shows that we can control practically every aspect of the FortiClient's settings. We can turn off/on all the components, like AV, vulnerability scans, removable media access, web filtering, firewall, etc. Additionally, while browsing the possibilities for VPN connection I was able to find possibility to run scripts on connect or on disconnect from VPN. Tada, and like that we have arbitrary code execution!
+Now, we believe we can influence the configuration of FortiClient during installation, but what can we achieve with such config? Luckily, Fortinet provides documentation for XML configuration files, which is the type that is used here by `fcconfig` tool to create the plists. The [FortiClient XML Reference Guide](https://docs.fortinet.com/document/forticlient/7.0.7/xml-reference-guide/812076) shows that we can control practically every aspect of the FortiClient's settings. We can turn off/on all the components, like AV, vulnerability scans, removable media access, web filtering, firewall, etc. Additionally, while browsing the possibilities for VPN connection settings I was able to find possibility to run scripts on connect or on disconnect from VPN. Tada, and like that we have arbitrary code execution!
 
 Example exploitation scenarios:
 
@@ -77,11 +79,9 @@ if [ -f "$INSTALLER_VPN_BACKUP_FILE" ]; then
 fi
 ```
 
-This time we do not have that nice comment this time, but the code is easy to understand anyways. The code check if `/tmp/fc_vpn_save.plist` file exist and if true, it copies the `fc_vpn_save.plist` from the `/tmp/` folder with the use of the `cp` command to the application folder `/Library/Application Support/Fortinet/FortiClient/conf/`. The installation script doesn't do any validation on the source file and uses its content to set up VPN settings in the FortiClient application. It seems this code is intended to restore previously saved settings like VPN setup. It might be a functionality connected to software reinstall or similar functionality.
+This time we do not have that nice comment this time, but the code is easy to understand anyways. It if `/tmp/fc_vpn_save.plist` file exist and if true, it copies the `fc_vpn_save.plist` from the `/tmp/` folder with the use of the `cp` command to the application folder `/Library/Application Support/Fortinet/FortiClient/conf/`. The installation script doesn't do any validation on the source file and uses its content to set up VPN settings in the FortiClient application. It seems this code is intended to restore previously saved settings like VPN setup. It might be a functionality connected to software reinstall or similar functionality.
 
-What are plists anyways? Property List (plist) files on macOS are XML or binary files used to store configuration information for applications, preferences, and other system-level settings. They are commonly used by macOS and its applications to store user and system settings in a structured format. During the analysis of the first vulnerability, we saw that the `conf` file was transformed to `plist` with `fcconfig`.
-
-Given this info, it seems we are able to influence the settings similar way like in the first vulnerability and by using the similar tactic to create a VPN profile with on connect to get arbitrary code execution.
+Given this info, it seems we are able to influence the settings similar way like in the first vulnerability and by using the similar tactic to create a VPN profile with on connect to get arbitrary code execution. This time we need to plant directly a plist instead of XML file, that is later made into a plist.
 
 Example exploitation scenarios:
 
@@ -95,21 +95,22 @@ Example exploitation scenarios:
  ...
  ```
 
+ ![04]({{ site.baseurl }}/images/FortiClient/04.png)
+
 - A corporate device user aware that FortiClient is typically installed via an MDM solution like Intune, could plant a symlink file in the `/tmp/` folder, which would point to an arbitrary file on the system. This file would be copied from the original location to `/Library/Application Support/Fortinet/FortiClient/conf/`. This folder is accessible by all users, so it is possible to read sensitive information with admin privileges and read from a low-privilege account.
 
 `ln -s path_to_file_to_read_or_remove /tmp/fc_vpn_save.plist`
 
-![04]({{ site.baseurl }}/images/FortiClient/04.png)
+## Vendor Fix
 
-## The fix of the issues
-
-The developers can fix such issues by not relying on hard-coded file names in the locations available to write to the users and perform data validation on the inputs.
-
+The first issue was mitigated by implementing `--init` functionality to `fcconfig`, which does the initialization internally in the binary and doesn't rely on the empty xml file in `tmp` folder.
 ```
 # FCT need to run fcconfig once after installation in order to generate all plist
 echo "[$(date)]init local config" >> /var/log/fctinstallpost.log
 "$APP_SUPPORT_DIR"/bin/fcconfig --init
 ```
+
+The second issue was mitigated by using `/etc/fct_upgarde` folder to load the plist from. Again this folder is not accessible only for root accounts, so the attacker cannot plant any malicious files.
 
 
 ```
@@ -121,7 +122,9 @@ if [ -f "$INSTALLER_VPN_BACKUP_FILE" ]; then
 fi
 ```
 
+## Conclusion
 
+The installation packages can be another source of vulnerabilities on macOS. Users rely on the good programming practices of software developers as they do for the app code, but as these two vulnerabilities demonstrate, it is not so simple. Such vulnerability could be escalated from unauthorized configuration file change to code execution. This is another good reminder that having a Mac doesn't mean you are invincible; you still need to pay attention to what you do, install, and run. At the end of the day, it is a computer like any other.
 
 ## Timeline
 
