@@ -3,29 +3,29 @@ layout: post
 title: Forti Client Mac - Lack of configuration file validation (CVE-2023-45588, CVE-2024-31492)
 ---
 
-How to apply skills gained during OSMR certification to find vulnerabilities in MacOS installation package and get two CVEs in the process.
+How to apply the skills gained during OSMR certification to find vulnerabilities in the MacOS installation package and get two CVEs in the process?
 
-The MacOS has the aura that it is secure no matter what the user does. Of course, that is not true and since finishing my OSMR certification from Offensive security I understood there are many common issue areas, that are introduced by the desktop software developers. It all starts with poorly coded installer packages and XPC services, and direct vulnerabilities in the software. Since that, I have checked several MacOS installer packages for possible logical mistakes in the installation process. The MacOS application installation process is in many cases executed with high privileges and developers count on static paths or make assumptions about the file contents. Such scenarios can be used to attack the local system and gain elevated access. In today's post, I would like to show you how such a scenario can lead to arbitrary code execution and getting two CVEs under my name.
+The MacOS has the aura that it is secure no matter what the user does. Of course, that is not true and since finishing my OSMR certification from Offensive Security I understood there are many common issue areas: poorly coded installer packages and XPC services, and direct vulnerabilities in the software. Since then, I have checked several MacOS installer packages for possible logical mistakes in the installation process. The MacOS application installation process is ussually executed with high privileges and developers count on static paths or make assumptions about the file contents. Such scenarios can be used to attack the local system and gain elevated access. In today's post, I would like to show you how such a scenario can lead to arbitrary code execution and getting two CVEs under my name.
 
 ## MacOS Installation packages
 
-MacOs use two types of installation packages on macOS - DMG (Disk Image) and PKG (Package). In summary, DMG files are disk images used for distributing files and applications, while PKG files are packages used specifically for software installation on macOS, offering more flexibility and customization options during the installation process through the usage of installation options and configurations, they can include scripts, pre-installation, and post-installation tasks. Such freedom also can cause issues as I will present.
+MacOs use two types of installation packages - DMG (Disk Image) and PKG (Package). DMG files are used for distributing files and applications, while PKG files are used specifically for software installation on macOS, offering more flexibility and customization options during the installation process through installation options, pre-installation, and post-installation scripts. Such freedom of pkg can also cause issues.
 
-The PKG files can be opened in a great tool Suspicious Package, which shows all the important information about the package like the number of files installed, where the new files will be located, metadata about the developer, supporting scripts, etc. This handy software can be used for a quick initial check of the installation package and validate if it might be vulnerable and is worth of deeper look.
+The PKG files can be analyzed in a great tool Suspicious Package, which shows all the details about the package like the number of files installed, where the new files will be located, metadata about the developer, supporting scripts, etc. This handy software can be used for a quick initial check of the installation package and validate if it might be vulnerable and is worth an in-depth look.
 
-The installation package I will be focusing here is FortiClient. The software is used in corporate environments and it can provide security features such as antivirus scanning, web filtering, and VPN capabilities.
+The installation package I will be focusing on here is FortiClient. The software is used in corporate environments and can provide security features such as antivirus scanning, web filtering, and VPN capabilities.
 
 ![01]({{ site.baseurl }}/images/FortiClient/01.png)
 
 ### Initial Analysis
 
-The installation package is a DMG file containing supporting data and an MPKG file.
+The installation package is a DMG file and contains MPKG file with supporting files.
 
 ![02]({{ site.baseurl }}/images/FortiClient/02.png)
 
 The PKG contains preinstall and postinstall scripts. As the software requires the installation of many files for proper functionality, the script is relatively complex with function calls to copy the files to the expected locations, remove old services, get the correct system preferences, initiate the settings, set VPN connections, and much more.
 
-I like to start the package analysis there as the scripts are executed in the security context of the installer. The common features of the script to check are  interactions with files in the folder we have access to (for example `/tmp/`), high-privilege calls that could be misused, or variable that could be directly or indirectly controlled. Our goal is to influence the flow during the installation and create, alter, or just remove files from the system or get a privilege call.
+I like to start the package analysis there, because the scripts are executed in the security context of the installer. The common features to check are interactions with files in the folder we have access to (for example `/tmp/`), high-privilege calls that could be misused, or variables that could be directly or indirectly controlled. The goal is to influence the flow during the installation and create, alter, or just remove files from the system or get a privilege call.
 
 ![03]({{ site.baseurl }}/images/FortiClient/03.png)
 
@@ -41,17 +41,19 @@ touch /tmp/init.conf
 rm /tmp/init.conf
 ```
 
-The developers were so nice, that they give us a comment, what the intent of the code it. Basically the code should do the initial setup of the plists. The plists are used as a configuration files for the software, so there might be possibility to influence the settings of the software.
+The developers were so nice that they left us a comment with the intent of the code. Basically, the code should do the initial setup of the plists.
 
-What are plists anyways? Property List (plist) files on macOS are XML or binary files used to store configuration information for applications, preferences, and other system-level settings. They are commonly used by macOS and its applications to store user and system settings in a structured format.
+What are plists anyways? Plists (Property Lists) are XML or binary files that store configuration information for applications, user and system preferences, and other system-level settings on MacOS systems.
 
-The codes starts with creation of a file `init.conf` in the `/tmp/` folder using the `touch` command. Touch command just make sure the file exists, so we do not need to do a race condition here and it is enough just to plant file in advanced and it will be used in later stages of the code. Afterwards it applies the XML config file by running `fcconfig` with parameter merge, which gives us also idea it might probably merge provided settings with the existing one. I wasn't able to find reliable documentation for the tool, but given the other clues, we can make an educated guess of its functionality.
+The plists for FortiClient store settings for the software, so there might be a possibility to influence the settings of the software.
 
-Now, we believe we can influence the configuration of FortiClient during installation, but what can we achieve with such config? Luckily, Fortinet provides documentation for XML configuration files, which is the type that is used here by `fcconfig` tool to create the plists. The [FortiClient XML Reference Guide](https://docs.fortinet.com/document/forticlient/7.0.7/xml-reference-guide/812076) shows that we can control practically every aspect of the FortiClient's settings. We can turn off/on all the components, like AV, vulnerability scans, removable media access, web filtering, firewall, etc. Additionally, while browsing the possibilities for VPN connection settings I was able to find possibility to run scripts on connect or on disconnect from VPN. Tada, and like that we have arbitrary code execution!
+The code starts with the creation of a file `init.conf` in the `/tmp/` folder using the `touch` command. Touch command makes sure the file exists, so we do not need to do a race condition here it is enough just to plant a file in advance and it will be used in later stages of the code. Afterward, it applies the XML config file by running `fcconfig` with parameter merge, which also gives us an idea it might probably merge the provided settings with the existing one. I wasn't able to find reliable documentation for the tool, but given the other clues, I could make an educated guess about its functionality.
+
+Now, we believe we can influence the configuration of FortiClient during installation, but what can we achieve with such a config? Luckily, Fortinet provides documentation for XML configuration files, which is used by `fcconfig` tool to create corresponding plists. The [FortiClient XML Reference Guide](https://docs.fortinet.com/document/forticlient/7.0.7/xml-reference-guide/812076) shows that we can control practically every aspect of the FortiClient's settings. It is possible to turn off/on all the components, like AV, vulnerability scans, removable media access, web filtering, firewall, etc. Additionally, while browsing the possibilities for VPN connection settings I found on connect/on disconnect directives that allow script as a sub-directive. Tada, and like that we have arbitrary code execution!
 
 Example exploitation scenarios:
 
-- With short-term access and limited permissions to a device, the attacker could plant configuration files in the `/tmp/` folder with VPN profile setup. One property of a VPN profile would be the `on_connect` property with arbitrary code that would be executed every time with attempt to connect to VPN within the security context of the application. The provided proof of concept snippet demonstrates execution of a TCP connection, potentially used for establishing persistence.
+- With short-term access and limited permissions to a device, the attacker could plant configuration files in the `/tmp/` folder with a VPN profile setup. One property of a VPN profile would be the `on_connect` property with arbitrary code that would be executed every time an attempt to connect to a VPN within the security context of the application. The provided proof of concept snippet demonstrates the execution of a TCP connection, potentially used for establishing persistence.
 
  ```
  ...
@@ -79,9 +81,9 @@ if [ -f "$INSTALLER_VPN_BACKUP_FILE" ]; then
 fi
 ```
 
-This time we do not have that nice comment this time, but the code is easy to understand anyways. It if `/tmp/fc_vpn_save.plist` file exist and if true, it copies the `fc_vpn_save.plist` from the `/tmp/` folder with the use of the `cp` command to the application folder `/Library/Application Support/Fortinet/FortiClient/conf/`. The installation script doesn't do any validation on the source file and uses its content to set up VPN settings in the FortiClient application. It seems this code is intended to restore previously saved settings like VPN setup. It might be a functionality connected to software reinstall or similar functionality.
+In this case, the developers didn't provide nice comments, but the code is easy to understand anyway. If `/tmp/fc_vpn_save.plist` file exists, the script copies the `fc_vpn_save.plist` from the `/tmp/` folder with the use of the `cp` command to the application folder `/Library/Application Support/Fortinet/FortiClient/conf/`. The installation script doesn't do validation on the source file and copies the file to the FortiClient program folder. FortiClient then reads the confirmation files from this folder and applies them as current VPN settings. It seems this code is intended to restore previously saved settings during software reinstallation.
 
-Given this info, it seems we are able to influence the settings similar way like in the first vulnerability and by using the similar tactic to create a VPN profile with on connect to get arbitrary code execution. This time we need to plant directly a plist instead of XML file, that is later made into a plist.
+Given this info, it seems we are able to influence the settings in a similar way as in the first vulnerability and by using a similar tactic to create a VPN profile with on connect/on disconnect directive to get arbitrary code execution. The only difference is that we need to plant directly a plist instead of an XML file.
 
 Example exploitation scenarios:
 
@@ -103,14 +105,14 @@ Example exploitation scenarios:
 
 ## Vendor Fix
 
-The first issue was mitigated by implementing `--init` functionality to `fcconfig`, which does the initialization internally in the binary and doesn't rely on the empty xml file in `tmp` folder.
+The vendor mitigated the first issue by implementing `--init` functionality to `fcconfig`, which does the initialization internally in the binary and doesn't rely on the empty xml file in `tmp` folder.
 ```
 # FCT need to run fcconfig once after installation in order to generate all plist
 echo "[$(date)]init local config" >> /var/log/fctinstallpost.log
 "$APP_SUPPORT_DIR"/bin/fcconfig --init
 ```
 
-The second issue was mitigated by using `/etc/fct_upgarde` folder to load the plist from. Again this folder is not accessible only for root accounts, so the attacker cannot plant any malicious files.
+The second issue mitigated the vendor by using `/etc/fct_upgarde` folder to load the plist from. Again this folder is not accessible only for root accounts, so the attacker cannot plant any malicious files.
 
 
 ```
@@ -124,7 +126,7 @@ fi
 
 ## Conclusion
 
-The installation packages can be another source of vulnerabilities on macOS. Users rely on the good programming practices of software developers as they do for the app code, but as these two vulnerabilities demonstrate, it is not so simple. Such vulnerability could be escalated from unauthorized configuration file change to code execution. This is another good reminder that having a Mac doesn't mean you are invincible; you still need to pay attention to what you do, install, and run. At the end of the day, it is a computer like any other.
+The installation packages can be another source of vulnerabilities on macOS. Users rely on the good programming practices of software developers as they do for the app code, but as these two vulnerabilities demonstrate, it is not so simple. Such vulnerability could be escalated from unauthorized configuration file change to code execution. This is another good reminder that having a Mac doesn't mean you are invincible; you still need to pay attention to what you do, install, and run. At the end of the day, Mac is a computer like any other.
 
 ## Timeline
 
